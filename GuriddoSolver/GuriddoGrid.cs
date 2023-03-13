@@ -6,71 +6,27 @@ namespace GuriddoSolver;
 
 public record GuriddoGrid
 {
-    private readonly ImmutableArray<ImmutableArray<GuriddoCell>> _cells;
-    private readonly ImmutableArray<GuriddoValues> _colArr;
-    private readonly ImmutableArray<ImmutableArray<GuriddoRange>> _colRanges;
-    private readonly ImmutableArray<GuriddoValues> _rowArr;
-    private readonly ImmutableArray<ImmutableArray<GuriddoRange>> _rowRanges;
+    private InternalGuriddoGrid? _guriddoGrid;
 
     public GuriddoGrid(IReadOnlyList<IReadOnlyList<int>> cellGrid, IReadOnlyList<IReadOnlyList<bool>> immutableCellGrid)
     {
         var internalGuriddoGrid = new InternalGuriddoGrid(cellGrid, immutableCellGrid);
-        var guriddoGrid = internalGuriddoGrid.Try(0);
+        _guriddoGrid = internalGuriddoGrid.TryLocal(0);
     }
 
     public override string ToString()
     {
-        return string.Join("\n", _cells.Select(rowCells => string.Join(", ", rowCells.Select(cell => cell.ToString()))));
+        return _guriddoGrid.ToString();
     }
 }
 
-file class InternalGuriddoGrid
+internal class InternalGuriddoGrid
 {
     private readonly GuriddoCell[][] _cells;
     private readonly GuriddoValues[] _colArr;
     private readonly GuriddoRange[][] _colRanges;
     private readonly GuriddoValues[] _rowArr;
     private readonly GuriddoRange[][] _rowRanges;
-    private int _valueZero = 0;
-
-    private InternalGuriddoGrid(InternalGuriddoGrid oldGrid)
-    {
-        _cells = new GuriddoCell[9][];
-        for (var row = 0; row < 9; row++)
-        {
-            _cells[row] = new GuriddoCell[9];
-            for (var col = 0; col < 9; col++)
-                _cells[row][col] = new GuriddoCell(oldGrid._cells[row][col]);
-        }
-
-        _colArr = new GuriddoValues[9];
-        _rowArr = new GuriddoValues[9];
-        oldGrid._colArr.CopyTo(_colArr, 0);
-        oldGrid._rowArr.CopyTo(_rowArr, 0);
-
-        _colRanges = new GuriddoRange[9][];
-        _rowRanges = new GuriddoRange[9][];
-        for (var col = 0; col < 9; col++)
-        {
-            var ranges = oldGrid._colRanges[col];
-            _colRanges[col] = new GuriddoRange[ranges.Length];
-            for (var i = 0; i < ranges.Length; i++)
-            {
-                var oldRange = ranges[i];
-                _colRanges[col][i] = new GuriddoRange(oldRange, _cells[oldRange.Start..oldRange.End].Select(x => x[col]).ToList());
-            }
-        }
-        for (var row = 0; row < 9; row++)
-        {
-            var ranges = oldGrid._rowRanges[row];
-            _rowRanges[row] = new GuriddoRange[ranges.Length];
-            for (var i = 0; i < ranges.Length; i++)
-            {
-                var oldRange = ranges[i];
-                _rowRanges[row][i] = new GuriddoRange(oldRange, _cells[row][oldRange.Start..oldRange.End]);
-            }
-        }
-    }
 
     public InternalGuriddoGrid(IReadOnlyList<IReadOnlyList<int>> cellGrid, IReadOnlyList<IReadOnlyList<bool>> immutableCellGrid)
     {
@@ -85,7 +41,6 @@ file class InternalGuriddoGrid
         }
 
         _cells = cells.Select(row => row.ToArray()).ToArray();
-        _valueZero = cells.Sum(x => x.Count(y => y is { Immutable: false, Value: 0 }));
 
         var rowArr = new GuriddoValues[9];
         var colArr = new GuriddoValues[9];
@@ -115,7 +70,9 @@ file class InternalGuriddoGrid
                     if (col != start)
                     {
                         var rangeCells = _cells[row][start..col];
-                        var range = new GuriddoRange(rangeCells, start, col);
+                        var range = new GuriddoRange(rangeCells);
+                        foreach (var cell in range.Cells) 
+                            cell.RowRange = range;
 
                         ranges.Add(range);
                     }
@@ -139,7 +96,9 @@ file class InternalGuriddoGrid
                     if (row != start)
                     {
                         var rangeCells = _cells[start..row].Select(arr => arr[col]).ToArray();
-                        var range = new GuriddoRange(rangeCells, start, row);
+                        var range = new GuriddoRange(rangeCells);
+                        foreach (var cell in range.Cells) 
+                            cell.ColRange = range;
 
                         ranges.Add(range);
                     }
@@ -152,80 +111,10 @@ file class InternalGuriddoGrid
 
         _colRanges = colRanges.ToArray();
 
-        Loop();
+        Init();
     }
-
-    public InternalGuriddoGrid? Try(int deep)
-    {
-        var minRow = -1;
-        var minCol = -1;
-        var minCount = 10;
-
-        for (var row = 0; row < 9; row++)
-        for (var col = 0; col < 9; col++)
-        {
-            var cell = _cells[row][col];
-            if (cell.Immutable || cell.Value != 0)
-                continue;
-            var count = cell.PossibleValues.Count();
-            if (count < minCount)
-            {
-                minRow = row;
-                minCol = col;
-                minCount = count;
-            }
-        }
-
-        if (minCount == 10)
-            return this;
-
-        var targetCell = _cells[minRow][minCol];
-        
-        if (deep < 10)
-        {
-            Console.WriteLine("1");
-            var tasks = Enumerable.Range(1, 9)
-                .Where(value => targetCell.PossibleValues.Contains((GuriddoValues)(1 << value)))
-                .Select(value => Task.Run(() => TryValue(deep, minRow, minCol, value)))
-                .ToArray();
-            Task.WaitAll(tasks);
-
-            return tasks.Select(t => t.Result).FirstOrDefault(t => t is not null);
-        }
-        else
-        {
-            for (var value = 1; value <= 9; value++)
-            {
-                if (targetCell.PossibleValues.Contains((GuriddoValues)(1 << value)))
-                {
-                    var endGrid = TryValue(deep, minRow, minCol, value);
-                    if (endGrid is not null)
-                        return endGrid;
-                }
-            }
-
-            return null;
-        }
-    }
-
-    private InternalGuriddoGrid? TryValue(int deep, int row, int col, int value)
-    {
-        if (_cells[row][col].PossibleValues.Contains((GuriddoValues)(1 << value)))
-        {
-            var newGrid = new InternalGuriddoGrid(this);
-            newGrid._cells[row][col].PossibleValues = (GuriddoValues)(1 << value);
-            newGrid.Loop();
-            var internalGuriddoGrid = newGrid.Try(deep + 1);
-            if (internalGuriddoGrid is not null)
-            {
-                return internalGuriddoGrid;
-            }
-        }
-
-        return null;
-    }
-
-    private bool Loop()
+    
+    private bool Init()
     {
         var rowHasUpdate = new bool[9];
         var colHasUpdate = new bool[9];
@@ -266,6 +155,8 @@ file class InternalGuriddoGrid
             if (newPossibleValues.Contains(cell.PossibleValues))
                 return;
             cell.PossibleValues &= newPossibleValues;
+            rowHasUpdate[row] = false;
+            colHasUpdate[col] = false;
             if (cell.Value == 0)
                 return;
             var value = cell.PossibleValues;
@@ -273,8 +164,6 @@ file class InternalGuriddoGrid
             Debug.Assert((_colArr[col] & value) == 0, "(_colArr[col] & value) == 0");
             _rowArr[row] |= value;
             _colArr[col] |= value;
-            rowHasUpdate[row] = false;
-            colHasUpdate[col] = false;
         }
 
         void UpdateRange(GuriddoRange[] ranges)
@@ -282,33 +171,118 @@ file class InternalGuriddoGrid
             var needUpdate = true;
             while (needUpdate)
             {
-                needUpdate = false;
-                foreach (var range in ranges)
+                while (needUpdate)
                 {
-                    range.Update();
-                    foreach (var otherRange in ranges)
+                    needUpdate = false;
+                    foreach (var range in ranges)
                     {
-                        if (otherRange == range)
-                            continue;
-                        var removeCount = otherRange.PossibleValuesList.RemoveAll(x => !range.MustValues.IsDisjoint(x));
-                        if (removeCount > 0)
-                            needUpdate = true;
+                        range.Update();
+                        foreach (var otherRange in ranges)
+                        {
+                            if (otherRange == range)
+                                continue;
+                            var afterRemove = otherRange.PossibleValuesList.RemoveAll(x => !range.MustValues.IsDisjoint(x));
+                            if (afterRemove != otherRange.PossibleValuesList)
+                            {
+                                otherRange.PossibleValuesList = afterRemove;
+                                needUpdate = true;
+                            }
+                        }
                     }
                 }
-            }
 
-            foreach (var range in ranges)
-            foreach (var cell in range.Cells)
-            {
-                if (range.PossibleValues.Contains(cell.PossibleValues))
-                    continue;
-                cell.PossibleValues &= range.PossibleValues;
-                if (cell.Value == 0)
-                    continue;
-                rowHasUpdate[cell.Row] = true;
-                colHasUpdate[cell.Col] = true;
+                foreach (var range in ranges)
+                foreach (var cell in range.Cells)
+                {
+                    if (range.PossibleValues.Contains(cell.PossibleValues))
+                        continue;
+                    cell.PossibleValues &= range.PossibleValues;
+                    var row = cell.Row;
+                    var col = cell.Col;
+                    rowHasUpdate[row] = false;
+                    colHasUpdate[col] = false;
+                    needUpdate = true;
+                    if (cell.Value == 0)
+                        continue;
+                    var value = (GuriddoValues)(1 << cell.Value);
+                    Debug.Assert((_rowArr[row] & value) == 0, "(_rowArr[row] & value) == 0");
+                    Debug.Assert((_colArr[col] & value) == 0, "(_colArr[col] & value) == 0");
+                    _rowArr[row] |= value;
+                    _colArr[col] |= value;
+                }
             }
         }
+    }
+
+    private int maxIndex = 0;
+
+    public InternalGuriddoGrid? TryLocal(int deep)
+    {
+        for (int row = 0; row < 9; row++)
+        {
+            for (int col = 0; col < 9; col++)
+            {
+                var targetCell = _cells[row][col];
+                if (targetCell.Immutable || targetCell.Value != 0)
+                    continue;
+
+                if (row * 9 + col > maxIndex)
+                {
+                    maxIndex = (row * 9 + col);
+                    Console.WriteLine(maxIndex);
+                }
+                
+                var rowMax = targetCell.RowRange.MaxValue;
+                var rowMin = targetCell.RowRange.MinValue;
+                var colMax = targetCell.ColRange.MaxValue;
+                var colMin = targetCell.ColRange.MinValue;
+                var values = ~(_rowArr[row] | _colArr[col]) & targetCell.RowRange.PossibleValues & targetCell.ColRange.PossibleValues;
+
+                var rowLengthSubOne = targetCell.RowRange.Cells.Length - 1;
+                var colLengthSubOne = targetCell.ColRange.Cells.Length - 1;
+                var min = Math.Max(Math.Max(rowMax - rowLengthSubOne, colMax - colLengthSubOne), 1);
+                var max = Math.Min(Math.Min(rowMin + rowLengthSubOne, colMin + colLengthSubOne), 9);
+                for (int value = min; value <= max; value++)
+                {
+                    var valuesValue = (GuriddoValues)(1 << value);
+                    if (values.Contains(valuesValue))
+                    {
+                        targetCell.Value = value;
+                        _rowArr[row] |= valuesValue;
+                        _colArr[col] |= valuesValue;
+                        if (value > rowMax) targetCell.RowRange.MaxValue = value;
+                        if (value > colMax) targetCell.ColRange.MaxValue = value;
+                        if (value < rowMin) targetCell.RowRange.MinValue = value;
+                        if (value < colMin) targetCell.ColRange.MinValue = value;
+
+                        var result = TryLocal(deep + 1);
+                        if (result is not null)
+                        {
+                            if (row == 3 && col == 8)
+                            {}
+                            return result;
+                        }
+
+                        targetCell.Value = 0;
+                        _rowArr[row] ^= valuesValue;
+                        _colArr[col] ^= valuesValue;
+                        if (value > rowMax) targetCell.RowRange.MaxValue = rowMax;
+                        if (value > colMax) targetCell.ColRange.MaxValue = colMax;
+                        if (value < rowMin) targetCell.RowRange.MinValue = rowMin;
+                        if (value < colMin) targetCell.ColRange.MinValue = colMin;
+                    }
+                }
+
+                return null;
+            }
+        }
+
+        return this;
+    }
+
+    public override string ToString()
+    {
+        return string.Join("\n", _cells.Select(rowCells => string.Join(";", rowCells.Select(cell => cell.ToString()))));
     }
 }
 
@@ -378,41 +352,24 @@ file static class GuriddoValuesMethod
 public class GuriddoCell
 {
     private GuriddoValues _possibleValues = GuriddoValues.All;
-    private int _value;
-
-    internal GuriddoCell(GuriddoCell oldCell)
-    {
-        _value = oldCell._value;
-        _possibleValues = oldCell._possibleValues;
-        Row = oldCell.Row;
-        Col = oldCell.Col;
-        Immutable = oldCell.Immutable;
-    }
 
     public GuriddoCell(int value, int row, int col, bool immutable)
     {
         Value = value;
+        if (value != 0)
+            _possibleValues = (GuriddoValues)(1 << value);
         Row = row;
         Col = col;
         Immutable = immutable;
     }
 
-    public int Value
-    {
-        get => _value;
-        init
-        {
-            _value = value;
-            if (value != 0)
-                _possibleValues = (GuriddoValues)(1 << value);
-        }
-    }
+    public int Value { get; set; }
 
     public int Row { get; }
 
     public int Col { get; }
 
-    public bool Immutable { get; }
+    public readonly bool Immutable;
 
     public GuriddoValues PossibleValues
     {
@@ -423,24 +380,26 @@ public class GuriddoCell
                 return;
             _possibleValues = value;
             if (_possibleValues.IsOnlyValue())
-                _value = _possibleValues.ToValue();
+                Value = _possibleValues.ToValue();
         }
     }
+
+    public GuriddoRange RowRange { get; set; } = null!;
+    public GuriddoRange ColRange { get; set; } = null!;
 
     public override string ToString()
     {
         if (Value != 0)
             return Immutable ? $"({Value})" : $"[{Value}]";
         if (Immutable)
-            return "()";
+            return "( )";
         return PossibleValues.ToString();
     }
 }
 
 public class GuriddoRange
 {
-    private static readonly ImmutableArray<ImmutableList<GuriddoValues>> AllPossibleValues;
-    private readonly List<GuriddoCell> _cells;
+    private static readonly ImmutableArray<ImmutableArray<GuriddoValues>> AllPossibleValues;
 
     static GuriddoRange()
     {
@@ -458,65 +417,45 @@ public class GuriddoRange
             }
         }
 
-        AllPossibleValues = allPossibleValues.Select(x => x.ToImmutableList()).ToImmutableArray();
+        AllPossibleValues = allPossibleValues.Select(x => x.ToImmutableArray()).ToImmutableArray();
     }
 
-    public GuriddoRange(GuriddoRange oldRange, IReadOnlyList<GuriddoCell> cells)
+    public GuriddoRange(IReadOnlyList<GuriddoCell> cells)
     {
-        _cells = cells.ToList();
-        Start = oldRange.Start;
-        End = oldRange.End;
-        PossibleValuesList = new List<GuriddoValues>(oldRange.PossibleValuesList);
-        MustValues = oldRange.MustValues;
-        PossibleValues = oldRange.PossibleValues;
+        PossibleValuesList = AllPossibleValues[cells.Count];
+        Cells = cells.ToImmutableArray();
     }
+    
+    public ImmutableArray<GuriddoValues> PossibleValuesList { get; set; }
 
-    public GuriddoRange(IReadOnlyList<GuriddoCell> cells, int start, int end)
-    {
-        Start = start;
-        End = end;
-        PossibleValuesList = AllPossibleValues[cells.Count].ToList();
-        Cells = cells.ToList();
-    }
-
-    public int Start { get; }
-    public int End { get; }
-
-    public List<GuriddoValues> PossibleValuesList { get; }
+    public ImmutableArray<GuriddoCell> Cells { get; }
 
     public GuriddoValues MustValues { get; private set; } = GuriddoValues.None;
 
     public GuriddoValues PossibleValues { get; private set; } = GuriddoValues.All;
 
-    public List<GuriddoCell> Cells
-    {
-        get => _cells;
-        init
-        {
-            _cells = value;
-            Update();
-        }
-    }
+    public int MaxValue { get; set; } = 1;
+    public int MinValue { get; set; } = 9;
 
     public void Update()
     {
         var hasValues = GuriddoValues.None;
         var cellPossibleValues = GuriddoValues.None;
-        foreach (var cell in _cells)
+        foreach (var cell in Cells)
         {
             if (cell.Value != 0)
                 hasValues |= cell.PossibleValues;
             cellPossibleValues |= cell.PossibleValues;
         }
 
-        PossibleValuesList.RemoveAll(rvs =>
+        var valuesList = PossibleValuesList.RemoveAll(rvs =>
             !cellPossibleValues.Contains(rvs) ||
             !rvs.Contains(hasValues) ||
-            _cells.Any(c => rvs.IsDisjoint(c.PossibleValues)));
+            Cells.Any(c => rvs.IsDisjoint(c.PossibleValues)));
 
         var rangePossibleValues = GuriddoValues.None;
         var mustValues = GuriddoValues.All;
-        foreach (var values in PossibleValuesList)
+        foreach (var values in valuesList)
         {
             rangePossibleValues |= values;
             mustValues &= values;
@@ -524,5 +463,17 @@ public class GuriddoRange
 
         PossibleValues &= rangePossibleValues;
         MustValues |= mustValues;
+
+        var guriddoCells = Cells.Where(x => x.Value != 0).ToList();
+        if (guriddoCells.Count == 0)
+        {
+            MaxValue = 0;
+            MinValue = 9;
+        }
+        else
+        {
+            MaxValue = guriddoCells.Max(x => x.Value);
+            MinValue = guriddoCells.Min(x => x.Value);
+        }
     }
 }
